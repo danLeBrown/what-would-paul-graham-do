@@ -10,7 +10,7 @@ The goal is simple: to build a chatbot trained on the essays of Paul Graham such
 ## Technologies
 
 - LLM (foundational model)
-- RAG (Retreivable Augmented Generation)
-- Graph database?
+- RAG (Retrievable Augmented Generation)
+- Vector database?
 
 Come along for the ride!
