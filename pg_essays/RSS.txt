@@ -1,0 +1,5 @@
+Title: RSS
+URL: http://www.paulgraham.com/rss.html
+==================================================
+
+RSS Aaron Swartz created a scraped feed of the essays page.
