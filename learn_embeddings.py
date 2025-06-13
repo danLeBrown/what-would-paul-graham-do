@@ -96,6 +96,8 @@ for index, filename in enumerate(os.listdir(directory_path)):
             
     except Exception as e:
         print(f"Error processing {filename}: {e}")
+        if "MPS backend out of memory" in str(e):
+            break  # Stop processing if out of memory
         continue
 
 print("All files processed and added to the collection.")
