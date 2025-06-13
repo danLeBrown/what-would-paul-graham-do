@@ -1,2 +1,7 @@
 .venv
 
+.env
+
+chroma_db
+
+locals
