@@ -1,5 +1,5 @@
 .venv
 .env
-chroma_db
+# chroma_db
 locals
 processed_pg_essays.json
