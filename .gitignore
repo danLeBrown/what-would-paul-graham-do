@@ -3,3 +3,4 @@
 # chroma_db
 locals
 processed_pg_essays.json
+.DS_Store
