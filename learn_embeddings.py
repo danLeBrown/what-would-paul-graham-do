@@ -2,6 +2,7 @@ import os
 import chromadb
 from chromadb.utils import embedding_functions
 import time
+import json
 
 sentence_transformer_model_path = "./locals/sentence_transformers/all-MiniLM-L6-v2"
 sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction(
@@ -22,18 +23,20 @@ processed_list = []
 if not os.path.exists(directory_path):
     raise FileNotFoundError(f"Directory {directory_path} does not exist.")
 
-# check if file exists
-if not os.path.exists(processed_file):
-    os.makedirs(os.path.dirname(processed_file), exist_ok=True)
-    with open(processed_file, "w") as f:
-        f.write("[]")  # Initialize with an empty JSON array
+# Load existing processed files
+if os.path.exists(processed_file):
+    try:
+        with open(processed_file, "r") as f:
+            processed_list = json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError):
+        processed_list = []
 else:
-    with open(processed_file, "r") as f:
-        processed_list = f.read().strip("[]").split(",") if f.read() else []
+    # Create the directory if it doesn't exist
+    os.makedirs(os.path.dirname(processed_file), exist_ok=True)
+    processed_list = []
 
 client = chromadb.PersistentClient(path="./chroma_db")
 collection = client.get_or_create_collection(name="pg_essays")
-
 
 from langchain.text_splitter import (
     RecursiveCharacterTextSplitter,
@@ -41,22 +44,20 @@ from langchain.text_splitter import (
 )
 
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=100, chunk_overlap=0)
-# character_splitter = RecursiveCharacterTextSplitter(
-#     separators=["\n\n", "\n", ". ", " ", ""], chunk_size=1000, chunk_overlap=0
-# )
 
 print(f"Processing files in directory: {directory_path}")
+print(f"Already processed {len(processed_list)} files: {processed_list}")
 
-for index, filename in enumerate(
-    os.listdir(directory_path)
-):  # Limit to first 10 files for testing
-    # check if file is already processed
-    if filename not in processed_list and filename.endswith(".txt"):
-        file_path = os.path.join(directory_path, filename)
+for index, filename in enumerate(os.listdir(directory_path)):
+    # Skip if file is already processed
+    if filename in processed_list or not filename.endswith(".txt"):
+        continue
+        
+    file_path = os.path.join(directory_path, filename)
+    try:
         with open(file_path, "r", encoding="utf-8") as file:
             content = file.read()
 
-            # character_split_texts = character_splitter.split_text("\n\n".join())
             texts = text_splitter.split_text(content)
 
             token_splitter = SentenceTransformersTokenTextSplitter(
@@ -66,30 +67,36 @@ for index, filename in enumerate(
             token_split_texts = token_splitter.split_text("\n\n".join(texts))
 
             # Store each chunk in the collection
-            for content in token_split_texts:
-                # Add the chunk to the collection with metadata
-                # Using filename as the ID for simplicity
+            chunk_count = 0
+            for i, chunk_content in enumerate(token_split_texts):
                 # Ensure the content is not empty
-                if not content.strip():
+                if not chunk_content.strip():
                     continue
-                # Add the chunk to the collection
-                # Using filename as the ID for simplicity
+                    
+                # Create unique ID for each chunk
+                chunk_id = f"{filename}_{i}"
+                
                 collection.add(
-                    documents=[content.strip()],
-                    metadatas=[{"filename": filename}],
-                    ids=[filename],
+                    documents=[chunk_content.strip()],
+                    metadatas=[{"filename": filename, "chunk_index": i}],
+                    ids=[chunk_id],
                 )
-        # Move the processed file to the processed directory
+                chunk_count += 1
+
+        # Add to processed list and save immediately
         processed_list.append(filename)
         with open(processed_file, "w") as f:
-            f.write(str(processed_list))
-        # Ensure the processed file is updated
-        processed_list = list(set(processed_list))
-        print(
-            f"Processed {filename} and added {len(token_split_texts)} chunks to the collection."
-        )
+            json.dump(processed_list, f, indent=2)
+        
+        print(f"Processed {filename} and added {chunk_count} chunks to the collection.")
+        
         if index % 10 == 0:
             print(f"Processed {index} files so far...")
-            # Sleep to avoid overwhelming the system
             time.sleep(0.2)
+            
+    except Exception as e:
+        print(f"Error processing {filename}: {e}")
+        continue
+
 print("All files processed and added to the collection.")
+print(f"Total processed files: {len(processed_list)}")
