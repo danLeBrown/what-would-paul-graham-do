@@ -2,5 +2,5 @@
 .env
 # chroma_db
 locals
-processed_pg_essays.json
+# processed_pg_essays.json
 .DS_Store
