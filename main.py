@@ -1,10 +1,13 @@
 import getpass
 import os
 from dotenv import load_dotenv
+from openai import OpenAI
+import chromadb
 
 load_dotenv()
 
 model = None
+model_name = os.environ.get("OLLAMA_MODEL", os.environ.get("MODEL_NAME", "gemini-2.0-flash")) 
 
 if os.environ.get("USE_OLLAMA"):
     print("Using Ollama as the model provider.")
@@ -13,9 +16,14 @@ if os.environ.get("USE_OLLAMA"):
     # from langchain.callbacks.manager import CallbackManager
     # from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 
-    model = OllamaLLM(
-        model=os.environ.get("OLLAMA_MODEL", "llama3.1"),
-        # callback_manager=CallbackManager([StreamingStdOutCallbackHandler()]),
+    # model = OllamaLLM(
+    #     model=os.environ.get("OLLAMA_MODEL", "llama3.1"),
+    #     # callback_manager=CallbackManager([StreamingStdOutCallbackHandler()]),
+    # )
+    # Initialize the client with Ollama's API
+    model = OpenAI(
+        base_url="http://localhost:11434/v1",  # Ollama's API endpoint
+        api_key="ollama",  # Required but unused (can be any string)
     )
 else:
     print("Using Google Gemini as the model provider.")
@@ -25,7 +33,13 @@ else:
         )
         from langchain.chat_models import init_chat_model
 
-        model = init_chat_model("gemini-2.0-flash", model_provider="google_genai")
+        # model = init_chat_model("gemini-2.0-flash", model_provider="google_genai")
+        model = OpenAI(
+            model="gemini-2.0-flash",
+            api_key=os.environ.get("GOOGLE_API_KEY"),
+            model_provider="google_genai",
+        )
+        
 
 if model is None:
     raise ValueError(
@@ -38,6 +52,9 @@ if model is None:
 
 
 query = "How do I tackle imposter syndrome in my career?"
+
+client = chromadb.PersistentClient(path="./chroma_db")
+collection = client.get_or_create_collection(name="pg_essays")
 
 results = collection.query(
     query_texts=query, n_results=10, include=["documents", "metadatas"]
@@ -71,7 +88,7 @@ def generate_multi_query(query, model=model):
         2. Explore related concepts Paul Graham often discusses
         3. Use synonyms or rephrasing of key terms
         4. Maintain the original intent while diversifying perspectives
-    The original query is: """ + query + """
+    The user query will be provided, and you will generate augmented queries based on it.
     Generate the queries in a JSON format with the following structure:
     {
         "queries": {
@@ -86,16 +103,26 @@ def generate_multi_query(query, model=model):
     }
     """
     
-    response = model.invoke(prompt)
+    response = model.chat.completions.create(
+        model=model_name,
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": query},
+        ],
+        stream=False,
+        response_format={'type': 'json_object'},
+        # max_tokens=500,
+        # temperature=0.7,
+    )
     
     print("Response from the model:", response)
 
-    # try:
-    #     queries = json.loads(response)["queries"]
-    # except json.JSONDecodeError:
-    #     print("Failed to parse JSON response from the model.")
-    #     queries = []
-    # return queries
+    try:
+        queries = json.loads(response.choices[0].message.content)["queries"]
+    except json.JSONDecodeError:
+        print("Failed to parse JSON response from the model.")
+        queries = []
+    return queries
 
 aug_queries = generate_multi_query(query)
 
