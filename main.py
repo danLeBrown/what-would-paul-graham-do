@@ -48,7 +48,7 @@ if model is None:
         "Model could not be initialized. Please check your environment variables."
     )
 
-query = "What are the factors for doing great work?"
+query = "Good artists copy; great artists steal. What does this mean and the difference?"
 
 client = chromadb.PersistentClient(path="./chroma_db")
 collection = client.get_or_create_collection(name="pg_essays")
@@ -79,68 +79,56 @@ cross_encoder = CrossEncoder(
 import json
 
 def generate_multi_query(query, model=model):
-    prompt = """
-    You are an assistant designed to expand and enrich user queries for a RAG system focused on Paul Graham's essays. Your task is to generate 3-5 alternative or related queries that explore different angles of the original question. These queries should:
-        1. Uncover deeper or broader context
-        2. Explore related concepts Paul Graham often discusses
-        3. Use synonyms or rephrasing of key terms
-        4. Maintain the original intent while diversifying perspectives
-    The user query will be provided, and you will generate augmented queries based on it.
-    Generate the queries in a JSON format with the following structure:
-    {
-        "queries": {
-            "original_query": "<original query>",
-            "augmented_queries": [
-                "<augmented query 1>",
-                "<augmented query 2>",
-                "<augmented query 3>",
-                ...
-            ]
-        }
-    }
-    """
+    system_prompt = """You are an assistant that generates alternative queries for a RAG system focused on Paul Graham's essays. 
+Generate 3-5 alternative queries that:
+1. Explore different angles of the original question
+2. Use related concepts Paul Graham discusses
+3. Rephrase using synonyms while maintaining intent
+4. Uncover broader or deeper context
+
+Return only a JSON array of the alternative queries in the format:
+```json
+{
+    "alternative_queries": [
+        "Alternative query 1",
+        "Alternative query 2",
+        "Alternative query 3",
+        ...
+    ]
+}
+```"""
+    
+    user_prompt = f"""Original query: "{query}"
+
+Generate alternative queries for this question about Paul Graham's work."""
     
     response = model.chat.completions.create(
         model=model_name,
         messages=[
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": query},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
         ],
-        stream=False,
         response_format={'type': 'json_object'},
-        # max_tokens=500,
-        # temperature=0.7,
+        temperature=0.7,
     )
     
-    # print("Response from the model:", response)
-    queries = {}
     try:
-        load_res = json.loads(response.choices[0].message.content)
-        print("Loaded response:", load_res)
-        if "queries" in load_res and "original_query" in load_res["queries"] and "augmented_queries" in load_res["queries"]:
-            queries = load_res
-        else:
-            # # strip the keys to match the expected structure
-            # for key in load_res:
-            #     strip_key = key.strip()
-            #     if strip_key == "queries":
-            #         for k in load_res[key]:
-            #             strip_k = k.strip()
-            #             if strip_k  == "original_query" or strip_k == "augmented_queries":
-            #                 queries[strip_key][strip_k] = load_res[strip_key][strip_k]
-            queries= recursively_strip_dict(load_res)
-    except json.JSONDecodeError:
-        print("Failed to parse JSON response from the model.")
-        queries = {}
-    return queries
+        result = json.loads(response.choices[0].message.content)
+        print("Response from the model:", result)
+        # Expect either {"queries": [...]} or {"alternative_queries": [...]}
+        queries = result.get("queries", result.get("alternative_queries", []))
+        return [query] + queries  # Include original
+    except (json.JSONDecodeError, KeyError):
+        print("Failed to parse response, using original query only")
+        return [query]
 
-aug_queries = generate_multi_query(query)
+queries = generate_multi_query(query)
+print("Generated Queries:", queries)
 
-joint_query = [
-    aug_queries["queries"]["original_query"]
-] + aug_queries["queries"]["augmented_queries"]
+# flatten the queries if they are nested lists
+joint_query = [item for sublist in queries for item in sublist] if isinstance(queries[0], list) else queries
 
-# print("\nJoint Query:", joint_query)
+print("\nJoint Query:", joint_query)
 
 results = collection.query(
     query_texts=joint_query, n_results=5, include=["documents", "metadatas"]
@@ -206,7 +194,6 @@ retrieved_metadatas = results["metadatas"]
 # Step 1: Get the original query (ensure aug_queries is called)
 # augmented_data = aug_queries()  # Assuming this returns {"queries": {"original_query": "..."}}
 # original_query = augmented_data["queries"]["original_query"]
-original_query = aug_queries["queries"]["original_query"]
 
 # Step 2: Deduplicate documents + metadata
 unique_pairs = list({(doc, meta["filename"]): (doc, meta) 
@@ -214,7 +201,7 @@ unique_pairs = list({(doc, meta["filename"]): (doc, meta)
 unique_documents = [doc for doc, meta in unique_pairs]
 
 # Step 3: Score documents with Cross-Encoder
-pairs = [[original_query, doc] for doc in unique_documents]
+pairs = [[query, doc] for doc in unique_documents]
 scores = cross_encoder.predict(pairs)
 top_indices = np.argsort(scores)[::-1][:5]
 
@@ -227,44 +214,54 @@ print("\nTop Documents:")
 print(context)
 
 def generate_answer(query, context, model=model):
-    prompt = """
-    You are an AI assistant trained on Paul Graham's essays. Use the following ranked excerpts from his works (ordered by relevance) to answer the user's question. Follow these rules:
-        1. **Stay faithful to the context**: Do not speculate or add information outside the provided excerpts.
-        2. **Prioritize highly ranked excerpts**: Focus on the top 3-5 most relevant passages.
-        3. **Be concise**: Summarize key ideas in 1-3 sentences, then quote the most relevant passage verbatim (with citation if available).
-        4. **If unclear, say so**: If the context doesn't contain enough information, respond: "Paul Graham hasn't explicitly addressed this, but related ideas include: [summary]."
-    Generate your answer in a JSON format with the following structure:
-    {
-        "summary": "<concise summary of the answer>",
-        "quote": "<verbatim quote from the context>",
-        "citation": "<citation if available, otherwise empty>"
-    }
-    """
+    system_prompt = """You are an AI assistant that answers questions using Paul Graham's essays. 
+
+Rules:
+1. Use ONLY the provided context - don't add external information
+2. Prioritize the most relevant excerpts (typically the first 3-5)
+3. If the context doesn't fully answer the question, be honest about limitations
+4. When quoting, use exact text from the context
+
+Response format: JSON with "answer", "key_quote", "source", and "confidence" fields."""
+    
+    user_prompt = f"""Context from Paul Graham's essays:
+{context}
+
+Question: {query}
+
+Based on this context, provide a comprehensive answer."""
     
     response = model.chat.completions.create(
         model=model_name,
         messages=[
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": f"based on the following context:\n\n{context}\n\nAnswer the query: '{query}'",},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
         ],
-        stream=False,
         response_format={'type': 'json_object'},
-        # max_tokens=500,
-        # temperature=0.7,
+        temperature=0.2,  # Low temperature for factual accuracy
+        max_tokens=800,   # Reasonable limit
     )
     
-    # print("Response from the model:", response)
-
     try:
-        res = json.loads(response.choices[0].message.content)
-    except json.JSONDecodeError:
-        print("Failed to parse JSON response from the model.")
-        res = {
-            "summary": "Unable to generate a response.",
-            "quote": "",
-            "citation": ""
+        result = json.loads(response.choices[0].message.content)
+        
+        # Ensure required fields exist
+        return {
+            "answer": result.get("answer", "Unable to generate answer from context."),
+            "key_quote": result.get("key_quote", result.get("quote", "")),
+            "confidence": result.get("confidence", "low"),
+            "source": result.get("source", "Paul Graham's essays"),
+            "query": query  # Preserve original query for debugging
         }
-    return res
+    except json.JSONDecodeError as e:
+        print(f"JSON parsing failed: {e}")
+        return {
+            "answer": "Failed to parse model response.",
+            "key_quote": "",
+            "confidence": "low",
+            "source": "Paul Graham's essays",
+            "query": query
+        }
 
 res = generate_answer(query=query, context=context, model=model)
 print("Final Answer:")
